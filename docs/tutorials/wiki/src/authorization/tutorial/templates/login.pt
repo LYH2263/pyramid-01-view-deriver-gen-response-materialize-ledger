@@ -1,0 +1,28 @@
+<div metal:use-macro="load: layout.pt">
+    <div metal:fill-slot="content">
+
+        <div class="content">
+              <p>
+                <strong>
+                  Login
+                </strong><br>
+                <span tal:replace="message"></span>
+              </p>
+              <form action="${url}" method="post">
+                <input type="hidden" name="came_from" value="${came_from}">
+                <div class="form-group">
+                  <label for="login">Username</label>
+                  <input type="text" name="login" value="${login}">
+                </div>
+                <div class="form-group">
+                  <label for="password">Password</label>
+                  <input type="password" name="password" value="${password}">
+                </div>
+                <div class="form-group">
+                  <button type="submit" name="form.submitted" value="Log In" class="btn btn-default">Log In</button>
+                </div>
+              </form>
+        </div>
+
+    </div>
+</div>

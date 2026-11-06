@@ -1,0 +1,193 @@
+Releasing Pyramid
+=================
+
+- For clarity, we define releases as follows.
+
+  - Alpha, beta, dev and similar statuses do not qualify whether a release is
+    major or minor. The term "pre-release" means alpha, beta, or dev.
+
+  - A release is final when it is no longer pre-release.
+
+  - A *major* release is where the first number either before or after the
+    first dot increases. Examples: 1.6 to 1.7a1, or 1.8 to 2.0.
+
+  - A *minor* or *bug fix* release is where the number after the second dot
+    increases. Example: 1.6 to 1.6.1.
+
+Prepare new release branch
+--------------------------
+
+- Create a new release branch, incrementing the version number.
+
+- Do any necessary branch merges (e.g., main to branch, branch to main).
+
+- On release branch:
+
+  $ git pull
+
+- Do platform test via tox:
+
+  $ tox -r
+
+  Make sure statement coverage is at 100% (the test run will fail if not).
+
+- Run tests on Windows if feasible.
+
+- For each ``pyramid-cookiecutter-*``, make a new branch off "main" with the
+  same name to align with the new Pyramid release branch name.
+
+- In the docs, update the ``cookiecutter`` command with the new branch name,
+  for example, ``cookiecutter gh:Pylons/pyramid-cookiecutter-starter --checkout
+  x.y-branch``. A search for ``cookiecutter gh:Pylons/pyramid-cookiecutter-``
+  should return all instances to be updated.
+
+- Ensure all features of the release are documented (audit CHANGES.rst or
+  communicate with contributors).
+
+- Change CHANGES.rst heading to reflect the new version number.
+
+- Copy relevant changes (delta bug fixes) from CHANGES.rst to
+  docs/whatsnew-X.X (if it's a major release).  Minor releases should
+  include a link under "Bug Fix Releases" to the minor feature
+  changes in CHANGES.rst.
+
+- Update README.rst to use correct versions of badges, URLs, and ALT option
+  according to the new release branch name.
+
+- Update whatsnew-X.X.rst in docs to point at change log entries for individual
+  releases if applicable.
+
+- For major version releases, in contributing.md, update branch descriptions.
+
+- For major version releases, in docs/conf.py, update values under
+  html_theme_options for in_progress and outdated across main, releasing
+  branch, and previously released branch. Also in the previously released
+  branch only, uncomment the sections to enable pylons_sphinx_latesturl.
+
+- Change the version in pyproject.toml to the release version number.
+
+- Change the [project.urls] to reference the correct branch/version.
+
+- Make sure PyPI long description renders::
+
+  $ tox -e lint
+
+- Create a release tag.
+
+  $ git tag X.X
+
+- Build the sdist and wheel.
+
+  $ tox -e build
+
+- Upload the artifacts to PyPI:
+
+  $ twine upload dist/pyramid-X.X-*
+
+- Configure RTD to publish the new release version of the docs.
+
+Prepare "main" for further development (major releases only)
+------------------------------------------------------------
+
+- Checkout "main".
+
+- In CHANGES.rst, preserve headings but clear out content. Add heading
+  "unreleased" for the version number.
+
+- From the release branch, forward port the changes in CHANGES.rst to
+  HISTORY.rst.
+
+- In contributing.md, forward port branch descriptions from release branch.
+
+- In docs/conf.py, add a commented line under
+  pylons_sphinx_latesturl_pagename_overrides for the release.
+
+- Change the version in pyproject.toml to the next version number.
+
+- Change the [project.urls] to reference the correct branch/version.
+
+- Update README.rst to use correct versions of badges, URLs, and ALT option
+  for "main" instead of the major release version.
+
+- In the docs, update the ``cookiecutter`` command with ``main``,
+  for example, ``cookiecutter gh:Pylons/pyramid-cookiecutter-starter --checkout
+  main``. A search for ``cookiecutter gh:Pylons/pyramid-cookiecutter-``
+  should return all instances to be updated.
+
+Update previous version (final releases only)
+---------------------------------------------
+
+- In docs/conf.py, update values under html_theme_options for in_progress and
+  outdated. Uncomment the sections to enable pylons_sphinx_latesturl.
+
+- Configure RTD to point the "latest" alias to the new release version of the
+  docs.
+
+Cookiecutters
+-------------
+
+- For each cookiecutter, clone the newly released branch to "latest" branch.
+
+Marketing and communications
+----------------------------
+
+- Edit Pylons/trypyramid.com/layouts/page/documentation.html for major
+  releases, pre-releases, and once pre-releases are final.
+
+- Edit `https://wiki.python.org/moin/WebFrameworks
+  <https://wiki.python.org/moin/WebFrameworks>`_.
+
+- Edit `https://en.wikipedia.org/wiki/Pylons_project <https://en.wikipedia.org/wiki/Pylons_project>`_.
+
+- Edit `https://www.wikidata.org/wiki/Q2342759 <https://www.wikidata.org/wiki/Q2342759>`_.
+  Under "software identifier version", click "add value", and enter the current release version.
+  Click "add qualifier", select "publication date" from auto-complete, and enter the publication date.
+  Click "add reference", and add references for "publication date", "reference URL" (the most recent tag on GitHub), "retrieved" as the publication date, and "title" specifying "Release #.#.#" and select the language.
+  Click "publish".
+  The data on this page gets pulled in to `https://en.wikipedia.org/wiki/Comparison_of_server-side_web_frameworks#Python <https://en.wikipedia.org/wiki/Comparison_of_server-side_web_frameworks#Python>`_.
+
+- Announce to Twitter.
+
+```
+Pyramid 2.x released.
+
+PyPI
+https://pypi.org/project/pyramid/2.x/
+
+=== One time only for new version, first pre-release ===
+What's New
+https://docs.pylonsproject.org/projects/pyramid/en/2.X-branch/whatsnew-2.X.html
+=== For all subsequent pre-releases ===
+Changes
+https://docs.pylonsproject.org/projects/pyramid/en/2.X-branch/changes.html#version-yyyy-mm-dd
+
+Issues
+https://github.com/Pylons/pyramid/issues
+```
+
+- Announce to maillist.
+
+```
+Pyramid 2.X.X has been released.
+
+The full changelog is here:
+https://docs.pylonsproject.org/projects/pyramid/en/2.X-branch/changes.html
+
+What's New In Pyramid 2.X:
+https://docs.pylonsproject.org/projects/pyramid/en/2.X-branch/whatsnew-2.X.html
+
+2.X release documentation (across all alphas and betas, as well as when it gets
+to final release):
+https://docs.pylonsproject.org/projects/pyramid/en/2.X-branch/
+
+You can install it via PyPI:
+
+  pip install Pyramid==2.X
+
+Enjoy, and please report any issues you find to the issue tracker at
+https://github.com/Pylons/pyramid/issues
+
+Thanks!
+
+- Pyramid core developers
+```

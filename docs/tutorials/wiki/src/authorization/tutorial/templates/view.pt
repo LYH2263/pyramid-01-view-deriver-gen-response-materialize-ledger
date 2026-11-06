@@ -1,0 +1,20 @@
+<div metal:use-macro="load: layout.pt">
+    <div metal:fill-slot="content">
+
+        <div class="content">
+            <div tal:replace="structure page_text">
+            Page text goes here.
+            </div>
+            <p>
+                <a tal:attributes="href edit_url" href="">
+                  Edit this page
+                </a>
+            </p>
+            <p>
+              Viewing <strong><span tal:replace="page.__name__">
+              Page Name Goes Here</span></strong>
+            </p>
+        </div>
+
+    </div>
+</div>
