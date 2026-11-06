@@ -8,6 +8,13 @@ from zope.interface import implementer
 
 from pyramid.csrf import check_csrf_origin, check_csrf_token
 from pyramid.interfaces import ISession
+from pyramid.materialize import (
+    SESSION,
+    SESSION_COOKIE_APPLIED,
+    SESSION_COOKIE_APPLY,
+    SESSION_DEFERRED,
+    get_materialization_ledger,
+)
 from pyramid.util import bytes_, text_
 
 
@@ -259,6 +266,15 @@ def BaseCookieSessionFactory(
                     self.request = None  # explicitly break cycle for gc
 
                 self.request.add_response_callback(set_cookie_callback)
+                ledger = get_materialization_ledger(self.request)
+                if ledger is not None:
+                    # the session Set-Cookie is deferred exactly once per
+                    # request; further changed() calls only re-mark dirty
+                    ledger.record(
+                        SESSION_DEFERRED,
+                        plane=SESSION,
+                        cookie=self._cookie_name,
+                    )
 
         def invalidate(self):
             self.clear()  # XXX probably needs to unset cookie
@@ -315,12 +331,33 @@ def BaseCookieSessionFactory(
 
         # non-API methods
         def _set_cookie(self, response):
+            ledger = get_materialization_ledger(self.request)
+            exception = None
             if not self._cookie_on_exception:
                 exception = getattr(self.request, 'exception', None)
                 if (
                     exception is not None
                 ):  # dont set a cookie during exceptions
+                    if ledger is not None:
+                        ledger.record(
+                            SESSION_COOKIE_APPLY,
+                            plane=SESSION,
+                            will_set=False,
+                            gated=True,
+                            set_on_exception=self._cookie_on_exception,
+                            cookie=self._cookie_name,
+                        )
                     return False
+            if ledger is not None:
+                ledger.record(
+                    SESSION_COOKIE_APPLY,
+                    plane=SESSION,
+                    will_set=True,
+                    gated=False,
+                    set_on_exception=self._cookie_on_exception,
+                    cookie=self._cookie_name,
+                    exception=exception is not None,
+                )
             cookieval = text_(
                 serializer.dumps((self.accessed, self.created, dict(self)))
             )
@@ -339,6 +376,12 @@ def BaseCookieSessionFactory(
                 httponly=self._cookie_httponly,
                 samesite=self._cookie_samesite,
             )
+            if ledger is not None:
+                ledger.record(
+                    SESSION_COOKIE_APPLIED,
+                    plane=SESSION,
+                    cookie=self._cookie_name,
+                )
             return True
 
     return CookieSession

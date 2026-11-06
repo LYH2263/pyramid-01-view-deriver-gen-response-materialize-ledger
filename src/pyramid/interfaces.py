@@ -1250,6 +1250,37 @@ class ICSRFStoragePolicy(Interface):
         """
 
 
+class IMaterializationLedger(Interface):
+    """A per-request, append-only ledger of view derivation and response
+    body singleton materialization events.
+
+    A ledger is declared for a single request and records the distinct
+    completion surfaces of MultiView probing versus execution, the
+    ``rendered_view`` materialization forks, ``RendererHelper`` singleton
+    body writes, the two CSRF moments/policies and the
+    ``owrapped_view`` lookup plane.  Nested ledger scopes on the same
+    request cannot write through an outer scope's already committed
+    ``request.response`` body fields, and leaving a scope never revokes
+    materialized body/header fields or deferred ``Set-Cookie``
+    registrations."""
+
+    def scope(name=''):
+        """Return a context manager that opens a nested commitment
+        scope and restores only the scope depth on exit (without
+        undoing any recorded materialization)."""
+
+    def phase(name):
+        """Return a context manager marking the current moment for
+        CSRF/session events recorded within it."""
+
+    def record(kind, **payload):
+        """Append an event to the ledger and return it."""
+
+    events = Attribute(
+        'The ordered sequence of LedgerEvent records.  Append-only.'
+    )
+
+
 class IIntrospector(Interface):
     def get(category_name, discriminator, default=None):
         """Get the IIntrospectable related to the category_name and the

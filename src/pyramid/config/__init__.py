@@ -16,6 +16,7 @@ from pyramid.config.adapters import AdaptersConfiguratorMixin
 from pyramid.config.assets import AssetsConfiguratorMixin
 from pyramid.config.factories import FactoriesConfiguratorMixin
 from pyramid.config.i18n import I18NConfiguratorMixin
+from pyramid.config.materialize import MaterializationConfiguratorMixin
 from pyramid.config.predicates import PredicateConfiguratorMixin, not_
 from pyramid.config.rendering import RenderingConfiguratorMixin
 from pyramid.config.routes import RoutesConfiguratorMixin
@@ -62,6 +63,7 @@ ActionState = ActionState  # bw-compat for pyramid_zcml
 
 class Configurator(
     ActionConfiguratorMixin,
+    MaterializationConfiguratorMixin,
     PredicateConfiguratorMixin,
     TestingConfiguratorMixin,
     TweensConfiguratorMixin,

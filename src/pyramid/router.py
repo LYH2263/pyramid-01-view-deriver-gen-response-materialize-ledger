@@ -20,6 +20,11 @@ from pyramid.interfaces import (
     ITraverser,
     ITweens,
 )
+from pyramid.materialize import (
+    LOOKUP,
+    VIEW_LOOKUP,
+    get_materialization_ledger,
+)
 from pyramid.request import Request, apply_request_extensions
 from pyramid.threadlocal import RequestContext
 from pyramid.traversal import DefaultRootFactory, ResourceTreeTraverser
@@ -139,6 +144,19 @@ class Router:
 
         # find a view callable
         context_iface = providedBy(context)
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            # the router dispatches on the route bound
+            # request.request_iface plane, unlike an owrapped wrapper
+            # lookup which uses providedBy(request)
+            ledger.record(
+                VIEW_LOOKUP,
+                plane=LOOKUP,
+                source='route',
+                request_iface=getattr(request, 'request_iface', IRequest),
+                name=view_name,
+                secure=True,
+            )
         response = _call_view(
             registry, request, context, context_iface, view_name
         )

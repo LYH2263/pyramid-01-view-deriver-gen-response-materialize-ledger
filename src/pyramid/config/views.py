@@ -44,6 +44,18 @@ from pyramid.interfaces import (
     IViewDerivers,
     IViewMapperFactory,
 )
+from pyramid.materialize import (
+    EXECUTE,
+    MULTIVIEW_CANDIDATES,
+    MULTIVIEW_EXECUTE_ATTEMPT,
+    MULTIVIEW_EXECUTE_CONTINUE,
+    MULTIVIEW_EXECUTE_HIT,
+    MULTIVIEW_EXECUTE_MISS,
+    MULTIVIEW_PROBE,
+    MULTIVIEW_PROBE_MISS,
+    PROBE,
+    get_materialization_ledger,
+)
 import pyramid.predicates
 from pyramid.registry import Deferred
 from pyramid.security import NO_PERMISSION_REQUIRED
@@ -125,12 +137,59 @@ class MultiView:
             return views
         return self.views
 
+    def _ledger_views(self, request, plane):
+        # fetch the accept-merged candidate order and, when a
+        # materialization ledger is declared, record that this order
+        # serves either the probe or the execution control flow
+        views = self.get_views(request)
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                MULTIVIEW_CANDIDATES,
+                plane=plane,
+                name=self.name,
+                count=len(views),
+                accepts=list(self.accepts),
+                orders=[order for order, _, _ in views],
+            )
+        return views
+
     def match(self, context, request):
-        for order, view, phash in self.get_views(request):
-            if not hasattr(view, '__predicated__'):
+        # probe plane: members without __predicated__ hit directly,
+        # predicated members are filtered by a boolean check; no view is
+        # actually called here, which is a different cut than __call__
+        ledger = get_materialization_ledger(request)
+        for order, view, phash in self._ledger_views(request, PROBE):
+            predicated = hasattr(view, '__predicated__')
+            if not predicated:
+                if ledger is not None:
+                    ledger.record(
+                        MULTIVIEW_PROBE,
+                        plane=PROBE,
+                        name=self.name,
+                        view=view,
+                        order=order,
+                        phash=phash,
+                        predicated=False,
+                        matched=True,
+                    )
                 return view
-            if view.__predicated__(context, request):
+            matched = view.__predicated__(context, request)
+            if ledger is not None:
+                ledger.record(
+                    MULTIVIEW_PROBE,
+                    plane=PROBE,
+                    name=self.name,
+                    view=view,
+                    order=order,
+                    phash=phash,
+                    predicated=True,
+                    matched=matched,
+                )
+            if matched:
                 return view
+        if ledger is not None:
+            ledger.record(MULTIVIEW_PROBE_MISS, plane=PROBE, name=self.name)
         raise PredicateMismatch(self.name)
 
     def __permitted__(self, context, request):
@@ -145,11 +204,43 @@ class MultiView:
         return view(context, request)
 
     def __call__(self, context, request):
-        for order, view, phash in self.get_views(request):
+        # execution plane: candidates are really invoked and a raised
+        # PredicateMismatch continues to the next candidate; the hit
+        # here need not be the one the probe plane matched
+        ledger = get_materialization_ledger(request)
+        for order, view, phash in self._ledger_views(request, EXECUTE):
+            if ledger is not None:
+                ledger.record(
+                    MULTIVIEW_EXECUTE_ATTEMPT,
+                    plane=EXECUTE,
+                    name=self.name,
+                    view=view,
+                    order=order,
+                    phash=phash,
+                )
             try:
-                return view(context, request)
+                response = view(context, request)
             except PredicateMismatch:
+                if ledger is not None:
+                    ledger.record(
+                        MULTIVIEW_EXECUTE_CONTINUE,
+                        plane=EXECUTE,
+                        name=self.name,
+                        view=view,
+                    )
                 continue
+            if ledger is not None:
+                ledger.record(
+                    MULTIVIEW_EXECUTE_HIT,
+                    plane=EXECUTE,
+                    name=self.name,
+                    view=view,
+                )
+            return response
+        if ledger is not None:
+            ledger.record(
+                MULTIVIEW_EXECUTE_MISS, plane=EXECUTE, name=self.name
+            )
         raise PredicateMismatch(self.name)
 
 

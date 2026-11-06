@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from functools import partial
 import json
 import os
@@ -10,6 +11,12 @@ from pyramid.decorator import reify
 from pyramid.events import BeforeRender
 from pyramid.httpexceptions import HTTPBadRequest
 from pyramid.interfaces import IJSONAdapter, IRendererFactory, IRendererInfo
+from pyramid.materialize import (
+    PHASE_RENDER,
+    RENDER,
+    RENDER_BEFORE,
+    get_materialization_ledger,
+)
 from pyramid.path import caller_package
 from pyramid.response import _get_response_factory
 from pyramid.threadlocal import get_current_registry
@@ -458,8 +465,20 @@ class RendererHelper:
         system_values = BeforeRender(system_values, value)
 
         registry = self.registry
-        registry.notify(system_values)
-        result = renderer(value, system_values)
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            # marks the render moment: a get_csrf_token from a template
+            # or a BeforeRender subscriber is recorded at this phase
+            # rather than at the csrf_view check phase
+            ledger.record(
+                RENDER_BEFORE, plane=RENDER, name=self.name
+            )
+            render_cm = ledger.phase(PHASE_RENDER)
+        else:
+            render_cm = nullcontext()
+        with render_cm:
+            registry.notify(system_values)
+            result = renderer(value, system_values)
         return result
 
     def render_to_response(self, value, system_values, request=None):
@@ -470,21 +489,42 @@ class RendererHelper:
         # broken out of render_to_response as a separate method for testing
         # purposes
         response = getattr(request, 'response', None)
+        ledger = get_materialization_ledger(request)
+        singleton = False
         if response is None:
             # request is None or request is not a pyramid.response.Response
             registry = self.registry
             response_factory = _get_response_factory(registry)
             response = response_factory(request)
+            if ledger is not None:
+                ledger.response_born(response)
+        elif ledger is not None:
+            # when a ledger is active, an inner scope must not write a
+            # body field through the outer scope's already committed
+            # request.response singleton; it materializes on a fresh
+            # response instead. header/cookie-only commits do not fork,
+            # so set_cookie + return-renderable still share the singleton
+            guarded = ledger.guard_singleton_write(
+                request, response, self.registry
+            )
+            singleton = guarded is response
+            response = guarded
 
         if result is not None:
             if isinstance(result, str):
                 response.text = result
+                field = 'text'
             elif isinstance(result, bytes):
                 response.body = result
+                field = 'body'
             elif hasattr(result, '__iter__'):
                 response.app_iter = result
+                field = 'app_iter'
             else:
                 response.body = result
+                field = 'body'
+            if ledger is not None:
+                ledger.body_committed(response, field, singleton=singleton)
 
         return response
 

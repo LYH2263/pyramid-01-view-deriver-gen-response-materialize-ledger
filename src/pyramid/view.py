@@ -19,6 +19,15 @@ from pyramid.interfaces import (
     IView,
     IViewClassifier,
 )
+from pyramid.materialize import (
+    LOOKUP,
+    VIEW_ATTEMPT,
+    VIEW_DISPATCH,
+    VIEW_HIT,
+    VIEW_LOOKUP,
+    VIEW_PREDICATE_MISMATCH,
+    get_materialization_ledger,
+)
 from pyramid.threadlocal import get_current_registry, manager
 from pyramid.util import hide_attrs, reraise as reraise_
 
@@ -62,6 +71,19 @@ def render_view_to_response(context, request, name='', secure=True):
     # that would allow people to find views for routes.  See
     # https://github.com/Pylons/pyramid/issues/1643 for more info.
     request_iface = providedBy(request)
+
+    ledger = get_materialization_ledger(request)
+    if ledger is not None:
+        # explicit providedBy(request) plane; deliberately not the
+        # route bound request.request_iface plane used by the router
+        ledger.record(
+            VIEW_LOOKUP,
+            plane=LOOKUP,
+            source='provided_by',
+            request_iface=request_iface,
+            name=name,
+            secure=secure,
+        )
 
     response = _call_view(
         registry,
@@ -655,6 +677,17 @@ def _call_view(
         view_classifier=view_classifier,
     )
 
+    ledger = get_materialization_ledger(request)
+    if ledger is not None:
+        ledger.record(
+            VIEW_DISPATCH,
+            plane=LOOKUP,
+            request_iface=request_iface,
+            name=view_name,
+            secure=secure,
+            count=len(view_callables),
+        )
+
     pme = None
     response = None
 
@@ -668,12 +701,22 @@ def _call_view(
                     view_callable, '__call_permissive__', view_callable
                 )
 
+            if ledger is not None:
+                ledger.record(
+                    VIEW_ATTEMPT, plane=LOOKUP, view=view_callable
+                )
             # if this view is secured, it will raise a Forbidden
             # appropriately if the executing user does not have the proper
             # permission
             response = view_callable(context, request)
+            if ledger is not None:
+                ledger.record(VIEW_HIT, plane=LOOKUP, view=view_callable)
             return response
         except PredicateMismatch as _pme:
+            if ledger is not None:
+                ledger.record(
+                    VIEW_PREDICATE_MISMATCH, plane=LOOKUP, view=view_callable
+                )
             pme = _pme
 
     if pme is not None:
@@ -760,6 +803,17 @@ class ViewMethodsMixin:
             request_iface = attrs.get('request_iface', IRequest)
 
             manager.push({'request': request, 'registry': registry})
+
+            ledger = get_materialization_ledger(request)
+            if ledger is not None:
+                ledger.record(
+                    VIEW_LOOKUP,
+                    plane=LOOKUP,
+                    source='exception',
+                    request_iface=request_iface.combined,
+                    name='',
+                    secure=secure,
+                )
 
             try:
                 response = _call_view(

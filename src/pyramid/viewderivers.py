@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import inspect
 from zope.interface import implementer, provider
 
@@ -13,6 +14,21 @@ from pyramid.interfaces import (
     ISecurityPolicy,
     IViewMapper,
     IViewMapperFactory,
+)
+from pyramid.materialize import (
+    CSRF,
+    CSRF_CHECK,
+    OWRAPPED,
+    OWRAPPED_INNER,
+    OWRAPPED_LOOKUP,
+    PHASE_CHECK,
+    RENDERED_ADAPTER,
+    RENDERED_IDENTITY,
+    RENDERED_NO_RENDERER,
+    RENDERED_OVERRIDE,
+    RENDERED_RENDERER,
+    RENDERED_VIEW_POPPED,
+    get_materialization_ledger,
 )
 from pyramid.response import Response
 from pyramid.security import NO_PERMISSION_REQUIRED
@@ -229,9 +245,31 @@ def owrapped_view(view, info):
 
     def _owrapped_view(context, request):
         response = view(context, request)
+        ledger = get_materialization_ledger(request)
         request.wrapped_response = response
+        if ledger is not None:
+            # the inner response body is materialized here, on the same
+            # request, before the wrapper is even looked up
+            ledger.record(
+                OWRAPPED_INNER,
+                plane=OWRAPPED,
+                name=viewname,
+                wrapper=wrapper_viewname,
+                response=response,
+            )
         request.wrapped_body = response.body
         request.wrapped_view = view
+        if ledger is not None:
+            # the wrapper lookup runs on the providedBy(request) plane,
+            # not on the route bound request.request_iface plane used by
+            # the router for this inner view
+            ledger.record(
+                OWRAPPED_LOOKUP,
+                plane=OWRAPPED,
+                name=viewname,
+                wrapper=wrapper_viewname,
+                route_iface=getattr(request, 'request_iface', None),
+            )
         wrapped_response = render_view_to_response(
             context, request, wrapper_viewname
         )
@@ -400,7 +438,12 @@ def rendered_view(view, info):
         # a view registration.
         def viewresult_to_response(context, request):
             result = view(context, request)
+            ledger = get_materialization_ledger(request)
             if result.__class__ is Response:  # common case
+                if ledger is not None:
+                    ledger.record(
+                        RENDERED_IDENTITY, result=result, response=result
+                    )
                 response = result
             else:
                 response = info.registry.queryAdapterOrSelf(result, IResponse)
@@ -424,7 +467,16 @@ def rendered_view(view, info):
                         'The value returned was %r.' + append
                     )
 
+                    if ledger is not None:
+                        ledger.record(RENDERED_NO_RENDERER, result=result)
                     raise ValueError(msg % (view_description(view), result))
+                if ledger is not None:
+                    ledger.record(
+                        RENDERED_ADAPTER,
+                        result=result,
+                        response=response,
+                        adapted=response is not result,
+                    )
 
             return response
 
@@ -435,17 +487,35 @@ def rendered_view(view, info):
 
     def rendered_view(context, request):
         result = view(context, request)
+        ledger = get_materialization_ledger(request)
         if result.__class__ is Response:  # potential common case
+            if ledger is not None:
+                ledger.record(
+                    RENDERED_IDENTITY, result=result, response=result
+                )
             response = result
         else:
             # this must adapt, it can't do a simple interface check
             # (avoid trying to render webob responses)
             response = info.registry.queryAdapterOrSelf(result, IResponse)
+            if response is not None:
+                if ledger is not None:
+                    ledger.record(
+                        RENDERED_ADAPTER,
+                        result=result,
+                        response=response,
+                        adapted=response is not result,
+                    )
             if response is None:
                 attrs = getattr(request, '__dict__', {})
                 if 'override_renderer' in attrs:
                     # renderer overridden by newrequest event or other
                     renderer_name = attrs.pop('override_renderer')
+                    if ledger is not None:
+                        # consumed exactly once for this materialization
+                        ledger.record(
+                            RENDERED_OVERRIDE, name=renderer_name
+                        )
                     view_renderer = renderers.RendererHelper(
                         name=renderer_name,
                         package=info.package,
@@ -455,8 +525,16 @@ def rendered_view(view, info):
                     view_renderer = renderer.clone()
                 if '__view__' in attrs:
                     view_inst = attrs.pop('__view__')
+                    if ledger is not None:
+                        ledger.record(
+                            RENDERED_VIEW_POPPED, view=view_inst
+                        )
                 else:
                     view_inst = getattr(view, '__original_view__', view)
+                if ledger is not None:
+                    ledger.record(
+                        RENDERED_RENDERER, name=view_renderer.name
+                    )
                 response = view_renderer.render_view(
                     request, result, view_inst, context
                 )
@@ -511,14 +589,39 @@ def csrf_view(view, info):
     if enabled:
 
         def csrf_view(context, request):
-            if request.method not in safe_methods and (
-                callback is None or callback(request)
-            ):
-                if check_origin:
-                    check_csrf_origin(
-                        request, raises=True, allow_no_origin=allow_no_origin
-                    )
-                check_csrf_token(request, token, header, raises=True)
+            ledger = get_materialization_ledger(request)
+            unsafe = request.method not in safe_methods
+            applies = callback is None or callback(request)
+            will_check = unsafe and applies
+            # the csrf_view moment is strictly before the downstream
+            # view runs; touching the policy here may already mint a
+            # token and register a deferred Set-Cookie, which is a
+            # different moment from a render-time get_csrf_token
+            if ledger is not None:
+                ledger.record(
+                    CSRF_CHECK,
+                    plane=CSRF,
+                    applied=will_check,
+                    safe=not unsafe,
+                    method=request.method,
+                    callback_applies=applies,
+                    token=token,
+                    header=header,
+                )
+            if will_check:
+                check_cm = (
+                    ledger.phase(PHASE_CHECK)
+                    if ledger is not None
+                    else nullcontext()
+                )
+                with check_cm:
+                    if check_origin:
+                        check_csrf_origin(
+                            request,
+                            raises=True,
+                            allow_no_origin=allow_no_origin,
+                        )
+                    check_csrf_token(request, token, header, raises=True)
             return view(context, request)
 
         wrapped_view = csrf_view

@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from urllib.parse import urlparse
 import uuid
 from webob.cookies import CookieProfile
@@ -5,6 +6,16 @@ from zope.interface import implementer
 
 from pyramid.exceptions import BadCSRFOrigin, BadCSRFToken
 from pyramid.interfaces import ICSRFStoragePolicy
+from pyramid.materialize import (
+    CSRF,
+    CSRF_COOKIE_APPLIED,
+    CSRF_COOKIE_DEFERRED,
+    CSRF_NEW_TOKEN,
+    CSRF_REQUEST_COOKIE,
+    CSRF_TOKEN,
+    PHASE_CHECK,
+    get_materialization_ledger,
+)
 from pyramid.settings import aslist
 from pyramid.util import (
     SimpleSerializer,
@@ -33,11 +44,27 @@ class LegacySessionCSRFStoragePolicy:
 
     def new_csrf_token(self, request):
         """Sets a new CSRF token into the session and returns it."""
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                CSRF_NEW_TOKEN,
+                plane=CSRF,
+                policy='legacy_session',
+                moment=ledger.current_phase,
+            )
         return request.session.new_csrf_token()
 
     def get_csrf_token(self, request):
         """Returns the currently active CSRF token from the session,
         generating a new one if needed."""
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                CSRF_TOKEN,
+                plane=CSRF,
+                policy='legacy_session',
+                moment=ledger.current_phase,
+            )
         return request.session.get_csrf_token()
 
     def check_csrf_token(self, request, supplied_token):
@@ -73,6 +100,15 @@ class SessionCSRFStoragePolicy:
     def new_csrf_token(self, request):
         """Sets a new CSRF token into the session and returns it."""
         token = self._token_factory()
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                CSRF_NEW_TOKEN,
+                plane=CSRF,
+                policy='session',
+                moment=ledger.current_phase,
+                key=self.key,
+            )
         request.session[self.key] = token
         return token
 
@@ -80,8 +116,19 @@ class SessionCSRFStoragePolicy:
         """Returns the currently active CSRF token from the session,
         generating a new one if needed."""
         token = request.session.get(self.key, None)
-        if not token:
+        new = not bool(token)
+        if new:
             token = self.new_csrf_token(request)
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                CSRF_TOKEN,
+                plane=CSRF,
+                policy='session',
+                moment=ledger.current_phase,
+                new=new,
+                key=self.key,
+            )
         return token
 
     def check_csrf_token(self, request, supplied_token):
@@ -139,11 +186,43 @@ class CookieCSRFStoragePolicy:
         """Sets a new CSRF token into the request and returns it."""
         token = self._token_factory()
         request.cookies[self.cookie_name] = token
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            # the request-side cookie is mutated immediately ...
+            ledger.record(
+                CSRF_REQUEST_COOKIE,
+                plane=CSRF,
+                name=self.cookie_name,
+                moment=ledger.current_phase,
+            )
 
         def set_cookie(request, response):
             self.cookie_profile.set_cookies(response, token)
+            ledger = get_materialization_ledger(request)
+            if ledger is not None:
+                # ... while the client-facing Set-Cookie is only applied
+                # when this response callback fires
+                ledger.record(
+                    CSRF_COOKIE_APPLIED, plane=CSRF, name=self.cookie_name
+                )
 
         request.add_response_callback(set_cookie)
+        if ledger is not None:
+            # append-only deferred Set-Cookie registration; leaving a
+            # ledger scope never removes it
+            ledger.record(
+                CSRF_COOKIE_DEFERRED,
+                plane=CSRF,
+                source='cookie_csrf',
+                name=self.cookie_name,
+                moment=ledger.current_phase,
+            )
+            ledger.record(
+                CSRF_NEW_TOKEN,
+                plane=CSRF,
+                policy='cookie',
+                moment=ledger.current_phase,
+            )
         return token
 
     def get_csrf_token(self, request):
@@ -151,8 +230,18 @@ class CookieCSRFStoragePolicy:
         sent with the current request."""
         bound_cookies = self.cookie_profile.bind(request)
         token = bound_cookies.get_value()
-        if not token:
+        new = not bool(token)
+        if new:
             token = self.new_csrf_token(request)
+        ledger = get_materialization_ledger(request)
+        if ledger is not None:
+            ledger.record(
+                CSRF_TOKEN,
+                plane=CSRF,
+                policy='cookie',
+                moment=ledger.current_phase,
+                new=new,
+            )
         return token
 
     def check_csrf_token(self, request, supplied_token):
@@ -241,7 +330,13 @@ def check_csrf_token(
         supplied_token = request.POST.get(token, "")
 
     policy = request.registry.getUtility(ICSRFStoragePolicy)
-    if not policy.check_csrf_token(request, text_(supplied_token)):
+    ledger = get_materialization_ledger(request)
+    check_cm = (
+        ledger.phase(PHASE_CHECK) if ledger is not None else nullcontext()
+    )
+    with check_cm:
+        valid = policy.check_csrf_token(request, text_(supplied_token))
+    if not valid:
         if raises:
             raise BadCSRFToken('check_csrf_token(): Invalid token')
         return False
